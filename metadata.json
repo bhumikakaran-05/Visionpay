@@ -1,0 +1,6 @@
+{
+  "name": "VisionPay - Voice-First Accessible Payment System",
+  "description": "A voice-first accessible payment web application designed for blind and visually impaired users with spoken guidance, transaction review, and secure authorization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
