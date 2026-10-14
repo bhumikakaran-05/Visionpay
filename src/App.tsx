@@ -39,6 +39,8 @@ export default function App() {
     'VisionPay ready. Welcome to VisionPay. Accessible payments made simple. Tap anywhere on the screen to begin.'
   );
   const [micErrorMessage, setMicErrorMessage] = useState<string | null>(null);
+  const [recognitionError, setRecognitionError] = useState<string | null>(null);
+  const [lastRecognizedSpeech, setLastRecognizedSpeech] = useState<string>('');
 
   // Developer & Evaluator Modals (Kept separate from customer-facing view)
   const [isDevMenuOpen, setIsDevMenuOpen] = useState(false);
@@ -132,40 +134,9 @@ export default function App() {
     });
   }, []);
 
-  // Helper to trigger voice listening safely
-  const triggerListening = useCallback(() => {
-    if (stateRef.current.voiceStatus === 'MICROPHONE_UNAVAILABLE') {
-      return;
-    }
-
-    audioEngine.startListening({
-      onResult: (transcript) => handleVoiceCommand(transcript),
-      onError: (errText, code) => {
-        if (code === 'not-allowed') {
-          audioEngine.stopListening();
-          setVoiceStatus('MICROPHONE_UNAVAILABLE');
-          setMicErrorMessage('Microphone access is denied. Please enable microphone permission in browser settings.');
-          const alertMsg =
-            'Microphone access is denied. Please allow microphone permission in your browser site settings, then tap Retry Microphone.';
-          setScreenReaderAnnouncement(alertMsg);
-          audioEngine.speak(alertMsg);
-        } else if (code === 'no-speech') {
-          setVoiceStatus('ERROR');
-          const noSpeechMsg = "I didn't hear anything. Please tap anywhere to speak again.";
-          setScreenReaderAnnouncement(noSpeechMsg);
-          updatePromptAndSpeak(noSpeechMsg, false);
-        } else {
-          setVoiceStatus('ERROR');
-          setScreenReaderAnnouncement(`Audio notice: ${errText}`);
-        }
-      },
-      onTimeout: () => {
-        setVoiceStatus('IDLE');
-        const timeoutMsg = "No speech detected. Tap anywhere on the screen when you're ready to speak.";
-        setScreenReaderAnnouncement(timeoutMsg);
-      },
-    });
-  }, []);
+  // Reference to handleVoiceCommand to avoid circular dependencies
+  const handleVoiceCommandRef = useRef<(cmd: string) => void>(() => {});
+  const triggerListeningRef = useRef<() => void>(() => {});
 
   // Central Spoken Prompt Engine (Pauses mic during speech to prevent feedback loops)
   const updatePromptAndSpeak = useCallback(
@@ -183,36 +154,121 @@ export default function App() {
           if (andListenAfter && stateRef.current.voiceStatus !== 'MICROPHONE_UNAVAILABLE') {
             setTimeout(() => {
               if (!audioEngine.getIsListening() && !audioEngine.getIsSpeaking()) {
-                triggerListening();
+                if (triggerListeningRef.current) {
+                  triggerListeningRef.current();
+                }
               }
             }, 300);
           }
         },
       });
     },
-    [triggerListening]
+    []
   );
 
   // Retry Microphone Permission Flow
   const handleRetryMicPermission = useCallback(async () => {
     audioEngine.unlockAudio();
     setVoiceStatus('PROCESSING');
-    setScreenReaderAnnouncement('Checking microphone permission...');
+    setRecognitionError(null);
+    setScreenReaderAnnouncement('Requesting microphone permission...');
 
     const result = await audioEngine.requestMicrophonePermission();
     if (result === 'granted') {
       setVoiceStatus('IDLE');
       setMicErrorMessage(null);
+      setRecognitionError(null);
       const okMsg = 'Microphone permission granted. What would you like to do? You can say: Make a payment, Check balance, or Help.';
       updatePromptAndSpeak(okMsg, true);
+    } else if (result === 'unsupported') {
+      setVoiceStatus('ERROR');
+      const unsupp = 'Speech recognition is not supported in this browser. Please open in Google Chrome or use the keyboard fallback below.';
+      setRecognitionError(unsupp);
+      setScreenReaderAnnouncement(unsupp);
+      audioEngine.speak(unsupp);
     } else {
       setVoiceStatus('MICROPHONE_UNAVAILABLE');
-      setMicErrorMessage('Microphone is still blocked. Tap the site settings lock icon in your browser address bar to allow.');
-      const stillBlocked = 'Microphone is still blocked. Please allow microphone access in site settings or use the keyboard below.';
+      setMicErrorMessage('Microphone access is denied. Please allow microphone permission in your browser site settings.');
+      const stillBlocked = 'Microphone access is denied. Please allow microphone in your browser address bar or use the keyboard fallback.';
       setScreenReaderAnnouncement(stillBlocked);
       audioEngine.speak(stillBlocked);
     }
   }, [updatePromptAndSpeak]);
+
+  // Helper to trigger voice listening safely
+  const triggerListening = useCallback(() => {
+    if (stateRef.current.voiceStatus === 'MICROPHONE_UNAVAILABLE') {
+      handleRetryMicPermission();
+      return;
+    }
+
+    setRecognitionError(null);
+
+    // Verify browser support for SpeechRecognition
+    if (!audioEngine.isRecognitionSupported()) {
+      setVoiceStatus('ERROR');
+      const unsupp = 'Speech recognition is not supported in this browser. Please open in Google Chrome or use the accessible text command input.';
+      setRecognitionError(unsupp);
+      setScreenReaderAnnouncement(unsupp);
+      audioEngine.speak(unsupp);
+      return;
+    }
+
+    audioEngine.startListening({
+      onResult: (transcript) => {
+        setRecognitionError(null);
+        setLastRecognizedSpeech(transcript);
+        if (handleVoiceCommandRef.current) {
+          handleVoiceCommandRef.current(transcript);
+        }
+      },
+      onError: (errText, code) => {
+        if (code === 'unsupported') {
+          setVoiceStatus('ERROR');
+          const unsupp = 'Speech recognition is not supported in this browser. Please open in Google Chrome or use the keyboard fallback.';
+          setRecognitionError(unsupp);
+          setScreenReaderAnnouncement(unsupp);
+          audioEngine.speak(unsupp);
+        } else if (code === 'not-allowed') {
+          audioEngine.stopListening();
+          setVoiceStatus('MICROPHONE_UNAVAILABLE');
+          setMicErrorMessage('Microphone access is denied. Please allow microphone permission in your browser settings.');
+          const alertMsg = 'Microphone access is denied. Please allow microphone permission in your browser site settings, then tap Retry Microphone.';
+          setScreenReaderAnnouncement(alertMsg);
+          audioEngine.speak(alertMsg);
+        } else if (code === 'no-speech') {
+          setVoiceStatus('ERROR');
+          const noSpeechMsg = "I didn't hear anything. Tap Retry Voice Input or tap anywhere on the screen to speak again.";
+          setRecognitionError('No speech was detected. Tap Retry Voice Input or tap anywhere on the screen to try again.');
+          setScreenReaderAnnouncement(noSpeechMsg);
+          updatePromptAndSpeak(noSpeechMsg, false);
+        } else {
+          setVoiceStatus('ERROR');
+          const errMsg = `Voice notice: ${errText}. Tap Retry to speak again.`;
+          setRecognitionError(errText);
+          setScreenReaderAnnouncement(errMsg);
+          updatePromptAndSpeak(errMsg, false);
+        }
+      },
+      onTimeout: () => {
+        setVoiceStatus('ERROR');
+        const timeoutMsg = "No speech detected. Tap Retry Voice Input or tap anywhere on the screen to try again.";
+        setRecognitionError('Speech recognition timed out without detecting speech. Tap Retry to speak again.');
+        setScreenReaderAnnouncement(timeoutMsg);
+      },
+    });
+  }, [handleRetryMicPermission, updatePromptAndSpeak]);
+
+  useEffect(() => {
+    triggerListeningRef.current = triggerListening;
+  }, [triggerListening]);
+
+  // Explicit Retry Handler for user to retry after recognition errors
+  const handleRetryRecognition = useCallback(() => {
+    setRecognitionError(null);
+    audioEngine.unlockAudio();
+    triggerListening();
+  }, [triggerListening]);
 
   // ==========================================================================
   // CONVERSATION STATE MACHINE
@@ -223,6 +279,8 @@ export default function App() {
       const current = stateRef.current;
       console.log('Voice Command received in state:', current.workflowState, lower);
       setScreenReaderAnnouncement(`Recognized: ${rawCommand}`);
+      setLastRecognizedSpeech(rawCommand);
+      setRecognitionError(null);
 
       // 1. UNIVERSAL CONVERSATION COMMANDS
       if (lower.includes('repeat') || lower.includes('what did you say') || lower.includes('pardon')) {
@@ -288,9 +346,33 @@ export default function App() {
       if (current.workflowState === 'STEP_1_START' || current.paymentStep === 1) {
         setVoiceStatus('PROCESSING');
 
-        // 1. Check if user spoke a 10-digit mobile number or digit words
+        // Allow user to say "retry" or "try again"
+        if (lower === 'retry' || lower === 'try again' || lower === 'retry recipient') {
+          audioEngine.playEarcon('step_advance');
+          updatePromptAndSpeak('Please say the contact name or ten-digit mobile number again.');
+          return;
+        }
+
+        // 1. Check if user spoke a mobile number or attempted one
         const mobileCheck = parseSpokenMobile(rawCommand);
-        if (mobileCheck.mobile) {
+
+        // A. If user spoke an attempted mobile number that is incomplete or has invalid length/prefix:
+        if (mobileCheck.isPotentialMobile && !mobileCheck.isValid) {
+          audioEngine.playEarcon('warning');
+          let spokenError = '';
+          if (mobileCheck.isIncomplete) {
+            spokenError = `The mobile number you spoke has only ${mobileCheck.digitCount} digits: ${mobileCheck.spokenDigits}. Indian mobile numbers must be ten digits. Please repeat the complete ten-digit mobile number.`;
+          } else if (mobileCheck.isTooLong) {
+            spokenError = `The mobile number you spoke has ${mobileCheck.digitCount} digits, which exceeds ten digits. Indian mobile numbers must be ten digits. Please repeat the ten-digit mobile number.`;
+          } else {
+            spokenError = `The mobile number you spoke, ${mobileCheck.spokenDigits}, is not a valid Indian mobile number. Mobile numbers must start with 6, 7, 8, or 9. Please repeat the ten-digit mobile number.`;
+          }
+          updatePromptAndSpeak(spokenError);
+          return;
+        }
+
+        // B. If user spoke a valid 10-digit mobile number
+        if (mobileCheck.isValid && mobileCheck.mobile) {
           const cleanMobile = mobileCheck.mobile;
           const spokenDigits = mobileCheck.spokenDigits || formatMobileSpokenDigits(cleanMobile);
           try {
@@ -312,9 +394,10 @@ export default function App() {
               );
               return;
             } else {
-              audioEngine.playEarcon('error');
+              // Valid 10 digits, but not found in saved contacts
+              audioEngine.playEarcon('warning');
               updatePromptAndSpeak(
-                `Mobile number ${spokenDigits} could not be resolved by the payment provider. No active banking account was found. You can say another mobile number or choose a saved contact like Rahul Sharma, Priya Patel, or Amit Verma.`
+                `No saved contact matches mobile number ${spokenDigits}, and it could not be resolved by the payment provider. Say "retry" to say the number again, or choose a saved contact like Rahul Sharma or Priya Patel.`
               );
               return;
             }
@@ -345,6 +428,10 @@ export default function App() {
             );
             return;
           } else if (data.isAmbiguous) {
+            audioEngine.playEarcon('warning');
+            updatePromptAndSpeak(data.spokenResponse);
+            return;
+          } else if (data.isIncomplete) {
             audioEngine.playEarcon('warning');
             updatePromptAndSpeak(data.spokenResponse);
             return;
@@ -544,6 +631,10 @@ export default function App() {
     [updatePromptAndSpeak]
   );
 
+  useEffect(() => {
+    handleVoiceCommandRef.current = handleVoiceCommand;
+  }, [handleVoiceCommand]);
+
   // Execute Authorization with Server Idempotency & Verification
   const executeAuthorization = async (authMethod: string, credential: any) => {
     // Prevent duplicate transactions during retries or multiple rapid clicks
@@ -639,6 +730,11 @@ export default function App() {
     if (voiceStatus === 'MICROPHONE_UNAVAILABLE') {
       handleRetryMicPermission();
       return;
+    }
+
+    // Clear any temporary recognition error on tap
+    if (recognitionError) {
+      setRecognitionError(null);
     }
 
     // 2. If on initial Welcome, advance to Action Select and speak
@@ -737,6 +833,9 @@ export default function App() {
         onQuickPinSubmit={(pin) => executeAuthorization('secure_pin', { pin })}
         onBiometricAuthorize={() => executeAuthorization('demo_device_biometric', { assertion: 'touch_verified' })}
         micErrorMessage={micErrorMessage}
+        recognitionError={recognitionError}
+        onRetryRecognition={handleRetryRecognition}
+        lastRecognizedSpeech={lastRecognizedSpeech}
         onOpenDevTools={() => setIsDevMenuOpen(true)}
       />
 

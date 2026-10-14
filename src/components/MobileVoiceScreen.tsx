@@ -34,6 +34,9 @@ interface MobileVoiceScreenProps {
   onQuickPinSubmit?: (pin: string) => void;
   onBiometricAuthorize?: () => void;
   micErrorMessage?: string | null;
+  recognitionError?: string | null;
+  onRetryRecognition?: () => void;
+  lastRecognizedSpeech?: string;
   onOpenDevTools?: () => void;
 }
 
@@ -55,6 +58,9 @@ export const MobileVoiceScreen: React.FC<MobileVoiceScreenProps> = ({
   onQuickPinSubmit,
   onBiometricAuthorize,
   micErrorMessage,
+  recognitionError,
+  onRetryRecognition,
+  lastRecognizedSpeech,
   onOpenDevTools,
 }) => {
   const [showKeyboardFallback, setShowKeyboardFallback] = useState(false);
@@ -188,29 +194,76 @@ export const MobileVoiceScreen: React.FC<MobileVoiceScreenProps> = ({
         </div>
       </header>
 
-      {/* 2. Microphone Permission Notice (When Denied) */}
+      {/* 2. Status Banners: Microphone Permission Notice, Listening Announcement, or Recognition Error Notice */}
       {voiceStatus === 'MICROPHONE_UNAVAILABLE' && (
         <div
           role="alert"
-          className="mx-4 mt-2 p-3.5 rounded-2xl bg-rose-50 border border-rose-300 text-rose-900 text-xs shrink-0 flex flex-col gap-2"
+          className="mx-4 mt-2 p-3.5 rounded-2xl bg-rose-50 border border-rose-300 text-rose-900 text-xs shrink-0 flex flex-col gap-2 shadow-xs"
         >
           <div className="flex items-start gap-2">
             <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
             <div>
               <span className="font-bold">Microphone Access Denied: </span>
-              {micErrorMessage || 'Permission is required for voice interaction. Turn on microphone in site settings.'}
+              {micErrorMessage || 'Permission is required for voice interaction. Please allow microphone in browser site settings.'}
             </div>
           </div>
           <div className="flex items-center gap-2 pt-1">
             <button
               onClick={onRetryMicPermission}
-              className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center gap-1.5 focus-visible:ring-2 focus-visible:ring-rose-400 shadow-sm"
+              className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs flex items-center gap-1.5 focus-visible:ring-2 focus-visible:ring-rose-400 shadow-sm transition-colors"
               aria-label="Retry microphone permission request"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               <span>Retry Permission</span>
             </button>
             <span className="text-[11px] text-rose-700">Or use the keyboard below.</span>
+          </div>
+        </div>
+      )}
+
+      {/* Clear Listening Announcement Banner */}
+      {voiceStatus === 'LISTENING' && (
+        <div
+          role="status"
+          aria-live="assertive"
+          className="mx-4 mt-2 px-3.5 py-2 rounded-2xl bg-blue-50 border border-blue-400 text-blue-900 text-xs shrink-0 flex items-center justify-between shadow-xs animate-pulse"
+        >
+          <div className="flex items-center gap-2 font-bold">
+            <Radio className="w-4 h-4 text-blue-600 animate-spin" />
+            <span>Listening for your voice... Speak your response now</span>
+          </div>
+          <span className="text-[10px] text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full font-mono font-semibold">
+            Chrome Mic
+          </span>
+        </div>
+      )}
+
+      {/* Helpful Recognition Error Notice & User Retry */}
+      {voiceStatus === 'ERROR' && recognitionError && (
+        <div
+          role="alert"
+          className="mx-4 mt-2 p-3.5 rounded-2xl bg-amber-50 border border-amber-300 text-amber-900 text-xs shrink-0 flex flex-col gap-2 shadow-xs"
+        >
+          <div className="flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-bold">Voice Recognition Notice: </span>
+              <span>{recognitionError}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (onRetryRecognition) onRetryRecognition();
+              }}
+              className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1.5 focus-visible:ring-2 focus-visible:ring-blue-400 shadow-sm transition-colors"
+              aria-label="Retry speech recognition"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Retry Voice Input</span>
+            </button>
+            <span className="text-[11px] text-amber-800">Or tap anywhere on the screen</span>
           </div>
         </div>
       )}
@@ -255,16 +308,28 @@ export const MobileVoiceScreen: React.FC<MobileVoiceScreenProps> = ({
             {systemPromptText}
           </h1>
 
-          {/* Heard Transcript */}
-          {heardTranscript && (
-            <div
-              className="p-2.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-900 text-xs sm:text-sm font-semibold inline-block max-w-xs animate-fadeIn"
-              aria-live="polite"
-            >
-              <span className="text-[11px] uppercase tracking-wider text-blue-700 mr-1.5 font-bold">Heard:</span>
-              <span className="italic">"{heardTranscript}"</span>
+          {/* Display Recognized Speech on Screen for Debugging */}
+          <div
+            className="p-2.5 rounded-xl bg-slate-100 border border-slate-300 text-slate-800 text-xs font-semibold flex items-center justify-between max-w-sm mx-auto shadow-xs text-left"
+            aria-live="polite"
+            title="Speech recognition debug output"
+          >
+            <div className="flex items-center gap-2 overflow-hidden mr-2">
+              <span className="text-[10px] uppercase tracking-wider bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded font-mono font-bold shrink-0">
+                Recognized:
+              </span>
+              <span className="font-mono text-blue-900 font-bold truncate">
+                {heardTranscript || lastRecognizedSpeech ? (
+                  `"${heardTranscript || lastRecognizedSpeech}"`
+                ) : (
+                  <span className="text-slate-400 font-normal italic">None yet (speak to test)</span>
+                )}
+              </span>
             </div>
-          )}
+            <span className="font-mono text-[10px] text-slate-500 shrink-0 uppercase font-semibold">
+              {voiceStatus}
+            </span>
+          </div>
 
           {/* Transaction Review Summary on Step 4 */}
           {paymentStep === 4 && draft.recipient && draft.amount && (

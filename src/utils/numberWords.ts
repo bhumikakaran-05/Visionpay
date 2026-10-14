@@ -146,25 +146,52 @@ export function formatAmountSpoken(amount: number): string {
 const DIGIT_WORDS: Record<string, string> = {
   zero: '0',
   oh: '0',
+  o: '0',
   one: '1',
+  won: '1',
   two: '2',
   to: '2',
   too: '2',
   three: '3',
+  tree: '3',
   four: '4',
   for: '4',
+  fore: '4',
   five: '5',
   six: '6',
   seven: '7',
   eight: '8',
   ate: '8',
   nine: '9',
+  niner: '9',
 };
 
 const DIGIT_NAMES = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
 
+const CONVERSATIONAL_FILLERS = new Set([
+  'pay',
+  'send',
+  'transfer',
+  'to',
+  'for',
+  'mobile',
+  'number',
+  'phone',
+  'cell',
+  'contact',
+  'recipient',
+  'call',
+  'please',
+  'and',
+  'at',
+  'is',
+  'my',
+  'the',
+  'plus',
+]);
+
 /**
- * Formats a 10-digit phone number digit-by-digit for clear spoken readback.
+ * Formats a phone number digit-by-digit for clear spoken readback.
  * e.g., "9876541234" -> "nine, eight, seven, six, five, four, one, two, three, four"
  */
 export function formatMobileSpokenDigits(mobile: string): string {
@@ -179,67 +206,190 @@ export function formatMobileSpokenDigits(mobile: string): string {
     .join(', ');
 }
 
-/**
- * Extracts a 10-digit mobile number from spoken phrases such as:
- * - "9876541234"
- * - "nine eight seven six five four one two three four"
- * - "pay to 9876545678"
- * - "mobile 9 8 7 6 5 4 1 2 3 4"
- */
-export function parseSpokenMobile(phrase: string): {
+export interface SpokenMobileResult {
   mobile: string | null;
+  rawDigits: string;
   spokenDigits: string;
+  isValid: boolean;
+  isPotentialMobile: boolean;
+  isIncomplete: boolean;
+  isTooLong: boolean;
+  isInvalidFormat: boolean;
+  digitCount: number;
   confidence: string;
-} {
-  if (!phrase) return { mobile: null, spokenDigits: '', confidence: 'empty' };
+}
 
-  const clean = phrase.toLowerCase().trim();
+/**
+ * Normalizes spoken mobile input by:
+ * - Handling spoken multipliers ("double eight", "triple nine")
+ * - Converting word digits to numeric characters
+ * - Stripping formatting, spaces, hyphens, and parentheses
+ * - Stripping Indian prefixes: +91, 91 (when 12 digits), 0 (when 11 digits)
+ * - Validating length (exactly 10 digits) and Indian mobile prefix (starts with 6, 7, 8, 9)
+ * - Identifying incomplete or invalid digit sequences
+ */
+export function parseSpokenMobile(phrase: string): SpokenMobileResult {
+  const emptyResult: SpokenMobileResult = {
+    mobile: null,
+    rawDigits: '',
+    spokenDigits: '',
+    isValid: false,
+    isPotentialMobile: false,
+    isIncomplete: false,
+    isTooLong: false,
+    isInvalidFormat: false,
+    digitCount: 0,
+    confidence: 'empty',
+  };
 
-  // 1. Direct 10-digit numeric sequence (e.g., "9876541234")
-  const directMatch = clean.match(/\b([6-9]\d{9})\b/) || clean.match(/\b(\d{10})\b/);
-  if (directMatch) {
-    const num = directMatch[1];
-    return {
-      mobile: num,
-      spokenDigits: formatMobileSpokenDigits(num),
-      confidence: 'exact_10_digits',
-    };
-  }
+  if (!phrase) return emptyResult;
 
-  // 2. Parse sequence of digits and digit words
-  // Normalize tokens
-  const tokens = clean
-    .replace(/[,\-_.]/g, ' ')
-    .replace(/mobile|number|phone|cell|pay|send|transfer|to|contact/g, ' ')
-    .trim()
-    .split(/\s+/);
+  let clean = phrase.toLowerCase().trim();
+
+  // 1. Expand spoken multipliers like "double eight" -> "eight eight", "triple nine" -> "nine nine nine"
+  clean = clean
+    .replace(/\bdouble\s+(\w+)\b/gi, (match, word) => {
+      const w = word.toLowerCase();
+      if (DIGIT_WORDS[w] !== undefined || /^\d$/.test(w)) {
+        return `${word} ${word}`;
+      }
+      return match;
+    })
+    .replace(/\btriple\s+(\w+)\b/gi, (match, word) => {
+      const w = word.toLowerCase();
+      if (DIGIT_WORDS[w] !== undefined || /^\d$/.test(w)) {
+        return `${word} ${word} ${word}`;
+      }
+      return match;
+    });
+
+  // 2. Strip explicit country code text if present
+  clean = clean
+    .replace(/\+91\b/g, ' ')
+    .replace(/\bplus\s+(?:nine\s+one|91)\b/gi, ' ')
+    .replace(/[,\-_.\(\)\/]/g, ' ');
+
+  // 3. Tokenize words and separate digits
+  const tokens = clean.trim().split(/\s+/).filter(Boolean);
 
   let extractedDigits = '';
+  let explicitDigitsFound = 0;
+  let digitWordsFound = 0;
+  let nonFillerWordsFound = 0;
+
   for (const token of tokens) {
     if (/^\d+$/.test(token)) {
       extractedDigits += token;
+      explicitDigitsFound += token.length;
     } else if (DIGIT_WORDS[token] !== undefined) {
       extractedDigits += DIGIT_WORDS[token];
+      digitWordsFound++;
+    } else if (!CONVERSATIONAL_FILLERS.has(token)) {
+      nonFillerWordsFound++;
     }
   }
 
-  if (extractedDigits.length === 10) {
+  // 4. Handle standard Indian prefixes on extracted digits:
+  // E.g. "919876541234" (12 digits starting with 91 followed by 6-9)
+  if (extractedDigits.length === 12 && extractedDigits.startsWith('91') && /^[6-9]/.test(extractedDigits.slice(2))) {
+    extractedDigits = extractedDigits.slice(2);
+  }
+  // E.g. "09876541234" (11 digits starting with 0 followed by 6-9)
+  else if (extractedDigits.length === 11 && extractedDigits.startsWith('0') && /^[6-9]/.test(extractedDigits.slice(1))) {
+    extractedDigits = extractedDigits.slice(1);
+  }
+
+  const digitCount = extractedDigits.length;
+  const spokenDigits = formatMobileSpokenDigits(extractedDigits);
+
+  // 5. Determine if this input represents an attempted mobile number
+  // It is a mobile attempt if:
+  // - It contains 2 or more explicit digits (e.g., "822630 597" has 9 digits)
+  // - It contains 3 or more spoken digit words (e.g., "eight two two six...")
+  // - Total extracted digits >= 3 and there are no competing contact name words
+  // - Phrase contains phone keywords ("mobile", "phone", "number", "cell")
+  const hasPhoneKeyword = /\b(mobile|phone|number|cell)\b/i.test(phrase);
+  const isPotentialMobile =
+    digitCount >= 10 ||
+    explicitDigitsFound >= 2 ||
+    digitWordsFound >= 3 ||
+    (hasPhoneKeyword && digitCount > 0) ||
+    (digitCount >= 3 && nonFillerWordsFound === 0);
+
+  if (!isPotentialMobile && digitCount === 0) {
     return {
-      mobile: extractedDigits,
-      spokenDigits: formatMobileSpokenDigits(extractedDigits),
-      confidence: 'spoken_digit_sequence',
+      ...emptyResult,
+      confidence: 'not_mobile',
     };
   }
 
-  // Check if string contains any contiguous 10 digits
-  const any10 = extractedDigits.match(/([6-9]\d{9})/) || extractedDigits.match(/(\d{10})/);
-  if (any10) {
+  // 6. Validate length and format for Indian mobile numbers
+  // Standard Indian mobile numbers are exactly 10 digits beginning with 6, 7, 8, or 9
+  if (digitCount === 10) {
+    const isIndianPrefix = /^[6-9]\d{9}$/.test(extractedDigits);
+    if (isIndianPrefix) {
+      return {
+        mobile: extractedDigits,
+        rawDigits: extractedDigits,
+        spokenDigits,
+        isValid: true,
+        isPotentialMobile: true,
+        isIncomplete: false,
+        isTooLong: false,
+        isInvalidFormat: false,
+        digitCount: 10,
+        confidence: 'valid_10_digits',
+      };
+    } else {
+      // 10 digits but starts with 0-5
+      return {
+        mobile: null,
+        rawDigits: extractedDigits,
+        spokenDigits,
+        isValid: false,
+        isPotentialMobile: true,
+        isIncomplete: false,
+        isTooLong: false,
+        isInvalidFormat: true,
+        digitCount: 10,
+        confidence: 'invalid_prefix_10_digits',
+      };
+    }
+  }
+
+  if (digitCount > 0 && digitCount < 10) {
     return {
-      mobile: any10[1],
-      spokenDigits: formatMobileSpokenDigits(any10[1]),
-      confidence: 'extracted_10_digits',
+      mobile: null,
+      rawDigits: extractedDigits,
+      spokenDigits,
+      isValid: false,
+      isPotentialMobile: true,
+      isIncomplete: true,
+      isTooLong: false,
+      isInvalidFormat: false,
+      digitCount,
+      confidence: 'incomplete_digits',
     };
   }
 
-  return { mobile: null, spokenDigits: '', confidence: 'none' };
+  if (digitCount > 10) {
+    return {
+      mobile: null,
+      rawDigits: extractedDigits,
+      spokenDigits,
+      isValid: false,
+      isPotentialMobile: true,
+      isIncomplete: false,
+      isTooLong: true,
+      isInvalidFormat: false,
+      digitCount,
+      confidence: 'too_many_digits',
+    };
+  }
+
+  return {
+    ...emptyResult,
+    isPotentialMobile: false,
+    confidence: 'none',
+  };
 }

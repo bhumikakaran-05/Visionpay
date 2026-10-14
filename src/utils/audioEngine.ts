@@ -391,15 +391,15 @@ class AudioEngine {
 
   public startListening(callbacks: {
     onResult: (transcript: string) => void;
-    onError?: (error: string, code?: 'not-allowed' | 'no-speech' | 'network' | 'aborted' | 'unknown') => void;
+    onError?: (error: string, code?: 'not-allowed' | 'no-speech' | 'network' | 'aborted' | 'unsupported' | 'unknown') => void;
     onEnd?: () => void;
     onTimeout?: () => void;
     continuous?: boolean;
   }) {
     if (!this.isRecognitionSupported()) {
       callbacks.onError?.(
-        'Speech recognition is not supported in this browser. Please use the accessible command input.',
-        'not-allowed'
+        'Speech recognition is not supported in this browser. Please open in Google Chrome or use the accessible text command fallback.',
+        'unsupported'
       );
       return;
     }
@@ -431,7 +431,7 @@ class AudioEngine {
             console.log('Voice interaction silence timeout reached');
             this.stopListening();
             callbacks.onTimeout?.();
-            callbacks.onError?.('No speech was detected. Please tap to speak again.', 'no-speech');
+            callbacks.onError?.('No speech was detected. Tap Retry Voice Input or tap anywhere on the screen to try again.', 'no-speech');
           }
         }, 8500);
       };
@@ -468,17 +468,20 @@ class AudioEngine {
         this.notifyListening(false);
         this.playEarcon('stop_listen');
 
-        let msg = 'Could not understand speech.';
-        let code: 'not-allowed' | 'no-speech' | 'network' | 'aborted' | 'unknown' = 'unknown';
+        let msg = 'Could not understand speech. Tap Retry to speak again.';
+        let code: 'not-allowed' | 'no-speech' | 'network' | 'aborted' | 'unsupported' | 'unknown' = 'unknown';
 
         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
           msg = 'Microphone permission was denied. Please allow microphone access in your browser settings, then tap Retry.';
           code = 'not-allowed';
+        } else if (event.error === 'audio-capture') {
+          msg = 'No microphone was detected. Please connect a working microphone and tap Retry.';
+          code = 'not-allowed';
         } else if (event.error === 'no-speech') {
-          msg = 'No speech was detected. Please tap the screen to try again.';
+          msg = 'No speech was detected. Tap Retry or speak louder.';
           code = 'no-speech';
         } else if (event.error === 'network') {
-          msg = 'Speech recognition network error occurred. Please check your connection.';
+          msg = 'Speech recognition network error. Please check your internet connection and tap Retry.';
           code = 'network';
         } else if (event.error === 'aborted') {
           msg = 'Speech recognition was cancelled.';
@@ -502,7 +505,7 @@ class AudioEngine {
       console.warn('Failed to start recognition:', e);
       this.isListening = false;
       this.notifyListening(false);
-      callbacks.onError?.('Could not activate microphone. Tap retry or use keyboard fallback.', 'not-allowed');
+      callbacks.onError?.('Could not activate speech recognition. Tap Retry or use keyboard fallback.', 'unknown');
     }
   }
 
@@ -514,9 +517,15 @@ class AudioEngine {
   }
 
   public stopListening() {
+    this.clearSilenceTimer();
     if (this.recognition) {
       try {
-        this.recognition.stop();
+        // Detach event listeners to prevent delayed events from firing into new recognition sessions
+        this.recognition.onstart = null;
+        this.recognition.onresult = null;
+        this.recognition.onerror = null;
+        this.recognition.onend = null;
+        this.recognition.abort();
       } catch (e) {
         // ignore
       }

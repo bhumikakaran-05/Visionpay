@@ -443,8 +443,8 @@ app.post('/api/recipients/resolve-mobile', (req, res) => {
       resolved: false,
       mobile: cleanMobile,
       spokenDigits,
-      message: `Mobile number ${cleanMobile} could not be resolved by the payment provider.`,
-      spokenResponse: `Mobile number ${spokenDigits} could not be resolved by the payment provider. No active banking account was found for this number. You can say another mobile number or choose a saved contact like Rahul Sharma or Priya Patel.`,
+      message: `No saved contact matches mobile number ${cleanMobile}. It could not be resolved by the payment provider.`,
+      spokenResponse: `No saved contact matches mobile number ${spokenDigits}, and it could not be resolved by the payment provider. No active banking account was found for this number. Please confirm the number or say "retry" to try again, or choose a saved contact like Rahul Sharma or Priya Patel.`,
     });
   }
 
@@ -473,10 +473,25 @@ app.post('/api/recipients/search', (req, res) => {
 
   const normalized = query.toLowerCase().trim();
   const digits = normalized.replace(/\D/g, '');
+  const nonDigitChars = normalized.replace(/[\d\s\-\+\(\)\,\.]/g, '');
+  const hasContactLetters = /[a-z]/i.test(nonDigitChars.replace(/mobile|number|phone|cell|pay|send|transfer|to/g, ''));
 
-  // 1. If user entered/spoke an exact 10-digit phone number
-  if (digits.length === 10) {
+  // 1. If user entered/spoke digits without contact name letters (e.g. attempted phone number)
+  if (digits.length > 0 && !hasContactLetters) {
     const spokenDigits = digits.split('').join(', ');
+
+    // Length validation for Indian mobile numbers
+    if (digits.length !== 10) {
+      return res.status(400).json({
+        error: 'Incomplete mobile number',
+        isIncomplete: digits.length < 10,
+        digitCount: digits.length,
+        spokenDigits,
+        spokenResponse: `The mobile number provided has only ${digits.length} digits: ${spokenDigits}. Indian mobile numbers must be ten digits. Please repeat the complete ten-digit mobile number.`,
+      });
+    }
+
+    // Exact 10-digit mobile check
     const phoneRecipient = recipients.find((r) => r.mobile === digits);
     if (phoneRecipient) {
       return res.json({
@@ -493,19 +508,18 @@ app.post('/api/recipients/search', (req, res) => {
         isAmbiguous: false,
         resolvedByMobile: false,
         spokenDigits,
-        message: `Mobile number ${digits} could not be resolved.`,
-        spokenResponse: `Mobile number ${spokenDigits} could not be resolved by the payment provider. No active banking account was found for this number. You can say another mobile number or choose a saved contact like Rahul Sharma, Priya Patel, or Amit Verma.`,
+        message: `No saved contact matches mobile number ${digits}.`,
+        spokenResponse: `No saved contact matches mobile number ${spokenDigits}, and it could not be resolved by the payment provider. Please confirm the number or say "retry" to try again, or choose a saved contact like Rahul Sharma, Priya Patel, or Amit Verma.`,
       });
     }
   }
 
-  // 2. Look for name or partial matches in saved contacts
+  // 2. Look for name or last-four matches in saved contacts
   const matches = recipients.filter((r) => {
     const nameMatch = r.name.toLowerCase().includes(normalized);
-    const phoneMatch = digits.length >= 4 && r.mobile.includes(digits);
-    const lastFourMatch = digits.length >= 2 && r.lastFourDigits.includes(digits);
+    const lastFourMatch = digits.length === 4 && r.lastFourDigits === digits;
     const upiMatch = r.upiId.toLowerCase().includes(normalized);
-    return nameMatch || phoneMatch || lastFourMatch || upiMatch;
+    return nameMatch || lastFourMatch || upiMatch;
   });
 
   if (matches.length === 0) {

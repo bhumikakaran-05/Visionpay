@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { TestResult } from '../types/payment';
 import { audioEngine } from '../utils/audioEngine';
-import { parseSpokenAmount, formatAmountSpoken } from '../utils/numberWords';
+import { parseSpokenAmount, formatAmountSpoken, parseSpokenMobile } from '../utils/numberWords';
 import { CheckCircle2, XCircle, Play, X, RefreshCw, ShieldCheck } from 'lucide-react';
 
 interface TestRunnerModalProps {
@@ -34,6 +34,7 @@ const INITIAL_TEST_CASES: TestResult[] = [
   { id: 21, title: 'Case 21: Pay by mobile number resolution', status: 'pending', details: 'POST /api/recipients/resolve-mobile validates 10 digits and provides digit-by-digit readback.' },
   { id: 22, title: 'Case 22: Unresolved mobile number safety', status: 'pending', details: 'Unregistered mobile explains resolution failure without fabricating identity.' },
   { id: 23, title: 'Case 23: Funding source transparency check', status: 'pending', details: 'API and UI explicitly disclose VisionPay Test Balance in development sandbox.' },
+  { id: 24, title: 'Case 24: Mobile number normalization & incomplete input guard', status: 'pending', details: 'Normalizes spaces, rejects incomplete numbers (e.g. 9 digits in "822630 597"), and parses grouped digits.' },
 ];
 
 export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
@@ -314,6 +315,28 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
             updated[i] = { ...updated[i], status: 'passed', output };
           } else {
             throw new Error('Funding source transparency missing');
+          }
+        } else if (id === 24) {
+          const incomplete = parseSpokenMobile('822630 597');
+          const validGrouped = parseSpokenMobile('822630 5971');
+          const individual = parseSpokenMobile('9 8 7 6 5 4 1 2 3 4');
+          const countryCode = parseSpokenMobile('+91 98765 41234');
+
+          if (
+            incomplete.isIncomplete &&
+            incomplete.digitCount === 9 &&
+            !incomplete.isValid &&
+            validGrouped.isValid &&
+            validGrouped.mobile === '8226305971' &&
+            individual.isValid &&
+            individual.mobile === '9876541234' &&
+            countryCode.isValid &&
+            countryCode.mobile === '9876541234'
+          ) {
+            output = 'Normalization verified: "822630 597" rejected as incomplete (9 digits). "822630 5971" parsed as 8226305971. Individual digits & +91 prefixes supported.';
+            updated[i] = { ...updated[i], status: 'passed', output };
+          } else {
+            throw new Error('Mobile normalization validation failed');
           }
         }
       } catch (err: any) {
